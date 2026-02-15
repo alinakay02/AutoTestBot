@@ -230,6 +230,11 @@ def main():
     _driver_ref.append(driver)
     atexit.register(_close_browser)
 
+    try:
+        driver.maximize_window()
+    except Exception:
+        pass
+
     def _on_signal(signum, frame):
         _stop_event.set()
         _close_browser()
@@ -249,6 +254,14 @@ def main():
             driver.switch_to.window(driver.window_handles[0])
     except Exception:
         pass
+
+    try:
+        driver.execute_script("window.open('');")
+        time.sleep(0.5)
+        if len(driver.window_handles) > 1:
+            driver.switch_to.window(driver.window_handles[-1])
+    except Exception as e:
+        logging.warning("Не удалось открыть новую вкладку: %s", e)
 
     try:
         run_authorization(driver, BASE_URL, _stop_requested)
