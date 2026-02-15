@@ -18,8 +18,10 @@ from selenium.common.exceptions import (
     WebDriverException,
 )
 
-# папка загрузок
-DEFAULT_DOWNLOAD_DIR = os.path.abspath(os.path.join(os.getcwd(), "downloads"))
+BROWSER_DOWNLOADS_DIR = os.environ.get(
+    "BROWSER_DOWNLOADS_DIR",
+    os.path.expandvars(r"%USERPROFILE%\Downloads"),
+)
 
 X_TH9_CONTEXT = "/html/body/div[1]/div[1]/div[2]/div[3]/div[2]/div/div/div/div/div[2]/div[2]/div/div/table/tbody/tr/td/table/tbody/tr/td/div[1]/div[1]/div/div/div/div[1]/div/div/div/div[1]/table/tbody/tr[1]/th[9]"
 X_CTX_MENU_LI1 = "/html/body/div[4]/ul/li[1]/a"
@@ -708,14 +710,13 @@ def _move_to_outputs(src_path: str, dst_dir: str) -> str:
 
 def process_table_and_export(
     driver,
-    download_dir: str = DEFAULT_DOWNLOAD_DIR,
+    download_dir: Optional[str] = None,
     stop_check: Optional[Callable[[], bool]] = None,
     do_click: Optional[Callable] = None,
 ):
     
     wait_cfg = WaitCfg()
-
-    os.makedirs(download_dir, exist_ok=True)
+    download_dir = download_dir or BROWSER_DOWNLOADS_DIR
 
     try:
         original_implicit = driver.timeouts.implicit_wait

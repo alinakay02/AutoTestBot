@@ -21,8 +21,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 
 from authorization import run_authorization
 from navigation import run_navigation
-#from table_export import process_table_and_export, DEFAULT_DOWNLOAD_DIR
-from table_export2 import process_table_and_export, DEFAULT_DOWNLOAD_DIR
+from table_export2 import process_table_and_export
 
 try:
     import chromedriver_binary
@@ -129,6 +128,16 @@ def create_yandex_driver(yandex_path=None, user_data_dir=None, headless=False, d
     else:
         driver = webdriver.Chrome(options=options)
 
+    if download_dir:
+        try:
+            d = os.path.abspath(download_dir)
+            driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+                "behavior": "allow",
+                "downloadPath": d,
+            })
+        except Exception:
+            pass
+
     return driver
 
 
@@ -216,7 +225,7 @@ def main():
         yandex_path=yandex_path,
         user_data_dir=user_data,
         headless=headless,
-        download_dir=DEFAULT_DOWNLOAD_DIR,
+        download_dir=None,
     )
     _driver_ref.append(driver)
     atexit.register(_close_browser)
@@ -252,7 +261,7 @@ def main():
         if not _stop_requested():
             process_table_and_export(
                 driver,
-                download_dir=DEFAULT_DOWNLOAD_DIR,
+                download_dir=os.environ.get("BROWSER_DOWNLOADS_DIR"),
                 stop_check=_stop_requested,
                 do_click=_do_click,
             )
