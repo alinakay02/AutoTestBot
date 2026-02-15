@@ -1,1 +1,7 @@
 venv/
+downloads/
+Excel outputs/
+TXT Outputs/
+__pycache__/
+eb_robot.log
+.env
