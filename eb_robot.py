@@ -248,20 +248,64 @@ def main():
     driver.implicitly_wait(5)
     driver.set_page_load_timeout(90)
 
-    try:
-        time.sleep(1.5)
+    
+    for _ in range(50):
         if driver.window_handles:
-            driver.switch_to.window(driver.window_handles[0])
+            break
+        time.sleep(0.2)
+    if not driver.window_handles:
+        logging.error("Нет ни одной вкладки браузера, выход")
+        sys.exit(1)
+
+    # Открываем новую вкладку
+    n_before = len(driver.window_handles)
+    try:
+        driver.execute_cdp_cmd("Target.createTarget", {"url": "about:blank"})
     except Exception:
         pass
-
-    try:
-        driver.execute_script("window.open('');")
-        time.sleep(0.5)
-        if len(driver.window_handles) > 1:
+    time.sleep(0.5)
+    if len(driver.window_handles) > n_before:
+        try:
             driver.switch_to.window(driver.window_handles[-1])
-    except Exception as e:
-        logging.warning("Не удалось открыть новую вкладку: %s", e)
+        except Exception:
+            pass
+    else:
+        try:
+            import win32gui
+            import win32con
+            import win32api
+            found = []
+            def _cb(hwnd, _):
+                if win32gui.IsWindowVisible(hwnd):
+                    t = (win32gui.GetWindowText(hwnd) or "").lower()
+                    if "yandex" in t or "яндекс" in t:
+                        found.append(hwnd)
+                        return False
+                return True
+            win32gui.EnumWindows(_cb, None)
+            if found:
+                win32gui.SetForegroundWindow(found[0])
+                time.sleep(0.15)
+                win32api.keybd_event(0x11, 0, 0, 0)  # Ctrl
+                win32api.keybd_event(0x54, 0, 0, 0)  # T
+                win32api.keybd_event(0x54, 0, win32con.KEYEVENTF_KEYUP, 0)
+                win32api.keybd_event(0x11, 0, win32con.KEYEVENTF_KEYUP, 0)
+                time.sleep(0.5)
+                if len(driver.window_handles) > n_before:
+                    driver.switch_to.window(driver.window_handles[-1])
+        except Exception as e:
+            logging.warning("Ctrl+T не сработал: %s", e)
+        if len(driver.window_handles) == n_before:
+            try:
+                driver.switch_to.window(driver.window_handles[0])
+                driver.get("about:blank")
+                time.sleep(0.3)
+                driver.execute_script("window.open('');")
+                time.sleep(0.5)
+                if len(driver.window_handles) > 1:
+                    driver.switch_to.window(driver.window_handles[-1])
+            except Exception as e:
+                logging.warning("Открытие вкладки через JS: %s", e)
 
     try:
         run_authorization(driver, BASE_URL, _stop_requested)
