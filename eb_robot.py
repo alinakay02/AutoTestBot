@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import atexit
+import logging
 import os
 import signal
 import subprocess
@@ -7,11 +8,46 @@ import sys
 import threading
 import time
 
-# Остановка по Ctrl+X (нужен pynput: pip install pynput)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.action_chains import ActionChains
+
+from authorization import run_authorization
+from navigation import run_navigation
+#from table_export import process_table_and_export, DEFAULT_DOWNLOAD_DIR
+from table_export2 import process_table_and_export, DEFAULT_DOWNLOAD_DIR
+
+try:
+    import chromedriver_binary
+except ImportError:
+    chromedriver_binary = None
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+except ImportError:
+    ChromeDriverManager = None
+
 _stop_event = threading.Event()
 _keyboard_listener = None
 
+DEFAULT_YANDEX_PATH = os.path.expandvars(
+    r"%LOCALAPPDATA%\Yandex\YandexBrowser\Application\browser.exe"
+)
+DEFAULT_USER_DATA_DIR = os.path.expandvars(
+    r"%LOCALAPPDATA%\Yandex\YandexBrowser\User Data"
+)
+BASE_URL = os.environ.get("EB_BASE_URL", "").strip()
+CHROMEDRIVER_VERSION = os.environ.get("CHROMEDRIVER_VERSION", "142.0.7444.162")
+
+
 def _init_ctrl_x_stop():
+    # остановка по Ctrl+X (pynput)
     global _keyboard_listener
     try:
         from pynput.keyboard import GlobalHotKeys
@@ -25,8 +61,10 @@ def _init_ctrl_x_stop():
     except Exception:
         return False
 
+
 def _stop_requested():
     return _stop_event.is_set()
+
 
 def _shutdown_keyboard_listener():
     global _keyboard_listener
@@ -37,38 +75,9 @@ def _shutdown_keyboard_listener():
             pass
         _keyboard_listener = None
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-
-try:
-    import chromedriver_binary
-except ImportError:
-    chromedriver_binary = None
-try:
-    from webdriver_manager.chrome import ChromeDriverManager
-except ImportError:
-    ChromeDriverManager = None
-
-DEFAULT_YANDEX_PATH = os.path.expandvars(
-    r"%LOCALAPPDATA%\Yandex\YandexBrowser\Application\browser.exe"
-)
-DEFAULT_USER_DATA_DIR = os.path.expandvars(
-    r"%LOCALAPPDATA%\Yandex\YandexBrowser\User Data"
-)
-BASE_URL = "https://eb.cert.roskazna.ru/"
-DEFAULT_TIMEOUT = 10
-
-
-CHROMEDRIVER_VERSION = "142.0.7444.162"
-
 
 def get_chrome_service():
-    """Возвращает Service для ChromeDriver (chromedriver_binary или webdriver_manager)."""
+    
     if chromedriver_binary is not None:
         driver_path = getattr(chromedriver_binary, "chromedriver_filename", None)
         if driver_path and os.path.isfile(driver_path):
@@ -79,8 +88,8 @@ def get_chrome_service():
     return Service(executable_path=path)
 
 
-def create_yandex_driver(yandex_path=None, user_data_dir=None, headless=False):
-    """Создаёт WebDriver для Яндекс.Браузера с указанным путём и профилем"""
+def create_yandex_driver(yandex_path=None, user_data_dir=None, headless=False, download_dir=None):
+    # WebDriver для Яндекс.Браузера
     path = yandex_path or DEFAULT_YANDEX_PATH
     if not os.path.isfile(path):
         raise FileNotFoundError(
@@ -92,6 +101,18 @@ def create_yandex_driver(yandex_path=None, user_data_dir=None, headless=False):
     options.binary_location = path
     if headless:
         options.add_argument("--headless=new")
+
+    if download_dir:
+        d = os.path.abspath(download_dir)
+        os.makedirs(d, exist_ok=True)
+        options.add_experimental_option(
+            "prefs",
+            {
+                "download.default_directory": d,
+                "download.prompt_for_download": False,
+                "safebrowsing.enabled": True,
+            },
+        )
 
     use_profile = user_data_dir if user_data_dir is not None else os.environ.get("YANDEX_USER_DATA")
     if use_profile:
@@ -124,274 +145,8 @@ def close_yandex_processes():
         pass
 
 
-CERT_DIALOG_TITLE = "Выбор сертификата"
-
-
-def _click_cert_ok_win32_api():
-    """Нажимает OK в нативном окне выбора сертификата через Win32 API"""
-    try:
-        import win32gui
-        import win32con
-        import win32api
-    except ImportError:
-        return False
-
-    found_dialog = []
-
-    def enum_callback(hwnd, _):
-        if not win32gui.IsWindowVisible(hwnd):
-            return True
-        try:
-            title = (win32gui.GetWindowText(hwnd) or "").strip()
-            if not title:
-                return True
-            t = title.lower()
-            if "сертификат" in t and ("выбор" in t or "certificate" in t):
-                found_dialog.append(hwnd)
-                return False
-        except Exception:
-            pass
-        return True
-
-    try:
-        win32gui.EnumWindows(enum_callback, None)
-    except Exception:
-        pass
-
-    if not found_dialog:
-
-        def enum_top(hwnd, _):
-            try:
-                title = (win32gui.GetWindowText(hwnd) or "").lower()
-                if "yandex" not in title and "яндекс" not in title and "chrome" not in title:
-                    return True
-                def enum_child(child_hwnd, _):
-                    try:
-                        t = (win32gui.GetWindowText(child_hwnd) or "").strip().lower()
-                        if "сертификат" in t and ("выбор" in t or "certificate" in t):
-                            found_dialog.append(child_hwnd)
-                            return False
-                    except Exception:
-                        pass
-                    return True
-                win32gui.EnumChildWindows(hwnd, enum_child, None)
-                if found_dialog:
-                    return False
-            except Exception:
-                pass
-            return True
-
-        try:
-            win32gui.EnumWindows(enum_top, None)
-        except Exception:
-            pass
-
-    if not found_dialog:
-        return False
-
-    dlg_hwnd = found_dialog[0]
-    ok_button_hwnd = [None]
-
-    def enum_children(hwnd, _):
-        try:
-            if win32gui.GetClassName(hwnd).lower() != "button":
-                return True
-            text = (win32gui.GetWindowText(hwnd) or "").strip()
-            if text in ("OK", "ОК"):
-                ok_button_hwnd[0] = hwnd
-                return False
-        except Exception:
-            pass
-        return True
-
-    try:
-        win32gui.EnumChildWindows(dlg_hwnd, enum_children, None)
-    except Exception:
-        pass
-
-    try:
-        win32gui.SetForegroundWindow(dlg_hwnd)
-        time.sleep(0.2)
-        if ok_button_hwnd[0] is not None:
-            win32api.PostMessage(ok_button_hwnd[0], 0x00F5, 0, 0)
-            return True
-        win32api.keybd_event(0x0D, 0, 0, 0)
-        win32api.keybd_event(0x0D, 0, win32con.KEYEVENTF_KEYUP, 0)
-        return True
-    except Exception:
-        return False
-
-
-def _find_cert_dialog(backend="uia"):
-    """Ищет окно диалога выбора сертификата через pywinauto (uia или win32)"""
-    try:
-        from pywinauto import Desktop
-        desktop = Desktop(backend=backend)
-        for win in desktop.windows():
-            try:
-                title = (win.window_text() or "").strip()
-                if CERT_DIALOG_TITLE in title or title == CERT_DIALOG_TITLE:
-                    return win
-            except Exception:
-                continue
-        for win in desktop.windows():
-            try:
-                wt = (win.window_text() or "")
-                if "Yandex" not in wt and "Яндекс" not in wt and "Chrome" not in wt:
-                    continue
-                for child in win.descendants():
-                    try:
-                        title = (child.window_text() or "").strip()
-                        if CERT_DIALOG_TITLE in title or title == CERT_DIALOG_TITLE:
-                            return child
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-    except Exception:
-        pass
-    return None
-
-
-def _try_click_ok_in_window(win, backend="uia"):
-    """Нажимает кнопку OK/ОК в переданном окне через pywinauto"""
-    for btn_title in ("OK", "ОК"):
-        try:
-            if backend == "uia":
-                ok_btn = win.child_window(title=btn_title, control_type="Button")
-            else:
-                ok_btn = win.child_window(title=btn_title, class_name="Button")
-            ok_btn.wait("ready", timeout=2)
-            ok_btn.click()
-            return True
-        except Exception:
-            continue
-    return False
-
-
-def _send_enter_to_window(win):
-    """Отправляет Enter в окно (фокус + type_keys)"""
-    try:
-        win.set_focus()
-        time.sleep(0.15)
-        win.type_keys("{ENTER}")
-        return True
-    except Exception:
-        return False
-
-
-def click_native_ok(timeout=15, window_title_substrings=None):
-    """В течение timeout нажимает OK в нативном диалоге выбора сертификата (Win32 + pywinauto)"""
-    try:
-        from pywinauto import Desktop
-        from pywinauto.findwindows import ElementNotFoundError
-    except ImportError:
-        return False
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if _click_cert_ok_win32_api():
-            return True
-
-        win = _find_cert_dialog(backend="uia")
-        if win is not None:
-            try:
-                win.set_focus()
-                time.sleep(0.2)
-                if _try_click_ok_in_window(win, backend="uia"):
-                    return True
-                _send_enter_to_window(win)
-                return True
-            except Exception:
-                try:
-                    _send_enter_to_window(win)
-                    return True
-                except Exception:
-                    pass
-
-        win = _find_cert_dialog(backend="win32")
-        if win is not None:
-            try:
-                win.set_focus()
-                time.sleep(0.2)
-                if _try_click_ok_in_window(win, backend="win32"):
-                    return True
-                _send_enter_to_window(win)
-                return True
-            except Exception:
-                try:
-                    _send_enter_to_window(win)
-                    return True
-                except Exception:
-                    pass
-
-        time.sleep(0.5)
-
-    if window_title_substrings is None:
-        window_title_substrings = [
-            "сертификат", "certificate", "выбор", "выберите",
-            "Выбор", "Certificate", "аутентификац"
-        ]
-    desktop = Desktop(backend="uia")
-    try:
-        for win in desktop.windows():
-            try:
-                title = (win.window_text() or "").strip()
-                if not title or "Yandex" in title or "Яндекс" in title:
-                    continue
-                if any(s.lower() in title.lower() for s in window_title_substrings):
-                    win.set_focus()
-                    time.sleep(0.2)
-                    if _try_click_ok_in_window(win, "uia"):
-                        return True
-                    _send_enter_to_window(win)
-                    return True
-            except Exception:
-                continue
-    except ElementNotFoundError:
-        pass
-
-    try:
-        desktop = Desktop(backend="uia")
-        w = desktop.window(focused=True)
-        title = (w.window_text() or "").strip()
-        if "сертификат" in title.lower() or "certificate" in title.lower():
-            w.type_keys("{ENTER}")
-            return True
-    except Exception:
-        pass
-
-    for _ in range(3):
-        try:
-            desktop = Desktop(backend="uia")
-            desktop.window(focused=True).type_keys("{ENTER}")
-            time.sleep(0.25)
-        except Exception:
-            pass
-    return False
-
-
-def wait_page_ready(driver, timeout=30):
-    def document_ready(d):
-        try:
-            return d.execute_script("return document.readyState") == "complete"
-        except Exception:
-            return False
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if _stop_requested():
-            return
-        try:
-            if document_ready(driver):
-                time.sleep(0.2)
-                return
-        except Exception:
-            pass
-        time.sleep(0.3)
-
-
 def _do_click(driver, element):
-    """Кликает по элементу: scrollIntoView, затем click / ActionChains / JS click"""
+    # клик: scrollIntoView, click / ActionChains / JS
     try:
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
         time.sleep(0.4)
@@ -415,64 +170,11 @@ def _do_click(driver, element):
     return False
 
 
-BUTTON_XPATHS = [
-    "/html/body/div[1]/section/div[2]/main/div/div/div[2]/div/div[2]/ul/li[7]/div/a",
-    "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[7]/div/div[1]/a[1]",
-    "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[7]/div/div[2]/app-tree/div/ul/li[4]/div/div[1]/a[1]",
-    "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[7]/div/div[2]/app-tree/div/ul/li[4]/div/div[2]/app-tree/div/ul/li[2]/div/div/a",
-    "/html/body/div[1]/section/div[2]/main/div[2]/div/div/div/ul/li[3]/div/a",
-]
-
-
-def _click_one_xpath(driver, xpath, timeout=5):
-    """Один раз находит элемент по XPath и нажимает по нему"""
-    try:
-        wait = WebDriverWait(driver, timeout=timeout)
-        el = wait.until(EC.presence_of_element_located((By.XPATH, xpath)))
-        wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-        el = driver.find_element(By.XPATH, xpath)
-        return _do_click(driver, el)
-    except Exception:
-        return False
-
-
-def click_by_xpath(driver, xpath, max_retries=5, previous_xpaths=None):
-    """Кликает по элементу по XPath; при retry сначала проходит previous_xpaths """
-    try:
-        driver.switch_to.default_content()
-    except Exception:
-        pass
-    prev = previous_xpaths or []
-    for attempt in range(max_retries):
-        if _stop_requested():
-            return False
-        try:
-            wait_page_ready(driver, timeout=4)
-        except Exception:
-            time.sleep(0.5)
-            continue
-        # При retry сначала проходим путь с предыдущего пункта
-        if attempt > 0 and prev:
-            for prev_xpath in prev:
-                if _stop_requested():
-                    return False
-                time.sleep(0.4)
-                _click_one_xpath(driver, prev_xpath, timeout=5)
-                time.sleep(0.6)
-        try:
-            if _click_one_xpath(driver, xpath, timeout=5):
-                return True
-        except Exception:
-            pass
-        time.sleep(0.8)
-    return False
-
-
 _driver_ref = []
 
 
 def _close_browser():
-    """Закрывает драйвер, останавливает слушатель клавиш и при необходимости завершает процессы браузера"""
+    # закрыть драйвер и слушатель клавиш
     _shutdown_keyboard_listener()
     if _driver_ref:
         try:
@@ -487,8 +189,23 @@ def _close_browser():
 
 def main():
     global _driver_ref
+    _log_dir = os.path.dirname(os.path.abspath(__file__))
+    _log_path = os.path.join(_log_dir, "eb_robot.log")
+    logging.basicConfig(
+        level=logging.INFO,
+        filename=_log_path,
+        encoding="utf-8",
+        format="%(asctime)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
+    )
+
     _stop_event.clear()
     _init_ctrl_x_stop()
+
+    if not BASE_URL:
+        logging.error("EB_BASE_URL не задан. Задайте переменную окружения EB_BASE_URL")
+        sys.exit(1)
 
     yandex_path = os.environ.get("YANDEX_BROWSER", DEFAULT_YANDEX_PATH)
     user_data = os.environ.get("YANDEX_USER_DATA", DEFAULT_USER_DATA_DIR)
@@ -499,6 +216,7 @@ def main():
         yandex_path=yandex_path,
         user_data_dir=user_data,
         headless=headless,
+        download_dir=DEFAULT_DOWNLOAD_DIR,
     )
     _driver_ref.append(driver)
     atexit.register(_close_browser)
@@ -516,45 +234,31 @@ def main():
     driver.implicitly_wait(5)
     driver.set_page_load_timeout(90)
 
-    cert_done = threading.Event()
-
-    def cert_clicker():
-        for _ in range(60):
-            if cert_done.is_set() or _stop_requested():
-                return
-            if click_native_ok(timeout=2):
-                break
-            time.sleep(0.5)
+    try:
+        time.sleep(1.5)
+        if driver.window_handles:
+            driver.switch_to.window(driver.window_handles[0])
+    except Exception:
+        pass
 
     try:
-        click_thread = threading.Thread(target=cert_clicker, daemon=True)
-        click_thread.start()
-        time.sleep(0.5)
-        try:
-            driver.get(BASE_URL)
-        except Exception as e:
-            print(e)
-        cert_done.set()
-        click_thread.join(timeout=2)
+        run_authorization(driver, BASE_URL, _stop_requested)
         if _stop_requested():
             return
-        time.sleep(0.2)
-        
-        if _stop_requested():
-            return
-        # пауза после авторизации
-        wait_page_ready(driver, timeout=2)
-        for i, xpath in enumerate(BUTTON_XPATHS):
-            if _stop_requested():
-                break
-            # При retry внутри click_by_xpath путь начнётся с предыдущих пунктов
-            previous_xpaths = BUTTON_XPATHS[:i] if i > 0 else None
-            click_by_xpath(driver, xpath, max_retries=5, previous_xpaths=previous_xpaths)
-            # Пауза после клика, чтобы дерево/меню успело открыться
-            if i < len(BUTTON_XPATHS) - 1:
-                time.sleep(2)
+        nav_ok = run_navigation(driver, _stop_requested, _do_click)
+        if not nav_ok:
+            logging.error("Навигация завершилась с ошибкой, выход")
+            sys.exit(1)
         if not _stop_requested():
-            time.sleep(3)
+            process_table_and_export(
+                driver,
+                download_dir=DEFAULT_DOWNLOAD_DIR,
+                stop_check=_stop_requested,
+                do_click=_do_click,
+            )
+    except Exception as e:
+        logging.exception("Ошибка при выполнении сценария")
+        sys.exit(1)
     finally:
         _close_browser()
 
