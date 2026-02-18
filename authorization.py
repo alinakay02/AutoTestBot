@@ -6,6 +6,70 @@ import time
 CERT_DIALOG_TITLE = "Выбор сертификата"
 
 
+def cert_dialog_visible():
+    """Проверяет, есть ли окно выбора сертификата (без клика)."""
+    try:
+        import win32gui
+    except ImportError:
+        pass
+    else:
+        found = []
+
+        def enum_cb(hwnd, _):
+            if not win32gui.IsWindowVisible(hwnd):
+                return True
+            try:
+                t = (win32gui.GetWindowText(hwnd) or "").strip().lower()
+                if t and "сертификат" in t and ("выбор" in t or "certificate" in t):
+                    found.append(hwnd)
+                    return False
+            except Exception:
+                pass
+            return True
+
+        try:
+            win32gui.EnumWindows(enum_cb, None)
+        except Exception:
+            pass
+        if found:
+            return True
+
+        def enum_top(hwnd, _):
+            try:
+                title = (win32gui.GetWindowText(hwnd) or "").lower()
+                if "yandex" not in title and "яндекс" not in title:
+                    return True
+                def enum_child(ch, _):
+                    try:
+                        t = (win32gui.GetWindowText(ch) or "").strip().lower()
+                        if t and "сертификат" in t and ("выбор" in t or "certificate" in t):
+                            found.append(ch)
+                            return False
+                    except Exception:
+                        pass
+                    return True
+                win32gui.EnumChildWindows(hwnd, enum_child, None)
+                return not found
+            except Exception:
+                return True
+
+        try:
+            win32gui.EnumWindows(enum_top, None)
+        except Exception:
+            pass
+        if found:
+            return True
+
+    try:
+        if _find_cert_dialog(backend="uia") is not None:
+            return True
+        if _find_cert_dialog(backend="win32") is not None:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _click_cert_ok_win32_api():
     # OK в нативном окне сертификата
     try:
@@ -269,7 +333,7 @@ def wait_page_ready(driver, timeout=30, stop_check=None):
         time.sleep(0.3)
 
 
-def run_authorization(driver, base_url, stop_check):
+def run_authorization(driver, base_url, stop_check, skip_navigate=False):
     cert_done = threading.Event()
 
     def cert_clicker():
@@ -293,10 +357,13 @@ def run_authorization(driver, base_url, stop_check):
         driver.switch_to.default_content()
     except Exception:
         pass
-    try:
-        driver.get(base_url)
-    except Exception:
-        logging.exception("Ошибка при загрузке страницы")
+
+    if not skip_navigate:
+        try:
+            driver.get(base_url)
+        except Exception:
+            logging.exception("Ошибка при загрузке страницы")
+
     cert_done.set()
     click_thread.join(timeout=2)
     time.sleep(0.5)

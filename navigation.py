@@ -13,8 +13,9 @@ RETRY_STEP_ROUNDS = 3
 BACKTRACK_LIMIT = 12
 POLL = 0.2
 DELAY_BETWEEN_ROUNDS = 1.0  # пауза между повторами
-WAIT_TREE_TIMEOUT = 8
-FRAME_TRY_TIMEOUT = 6  # таймаут в iframe
+WAIT_TREE_TIMEOUT = 2
+FRAME_TRY_TIMEOUT = 2
+TREE_XPATH_TIMEOUT = 0.8  # на каждый xpath при поиске дерева
 
 # селекторы готовности дерева
 TREE_READY_XPATHS = [
@@ -28,6 +29,9 @@ TREE_READY_XPATHS = [
 
 # шаг 1 — относительные пути, затем full path
 FIRST_BUTTON_FALLBACK_XPATHS = [
+    "/html/body/div[2]/section/div[2]/main/div/div/div[2]/div/div[2]/ul/li[7]/div/a",
+    "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[7]/div/div/a",
+    "/html/body/div[1]/section/div[2]/main/div/div/div[2]/div/div[2]/ul/li[7]/div/a",
     "//app-tree/div/ul/li[7]/div/div/a",
     "//app-tree//ul/li[7]//a",
     "//section//main//app-tree//ul/li[7]//a",
@@ -35,9 +39,6 @@ FIRST_BUTTON_FALLBACK_XPATHS = [
     "//main//app-tree/div/ul/li[7]/div/div/a",
     "//app-tree/div/ul/li[7]/div/a",
     "//main//ul/li[7]//a",
-    "/html/body/div[2]/section/div[2]/main/div/div/div[2]/div/div[2]/ul/li[7]/div/a",
-    "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[7]/div/div/a",
-    "/html/body/div[1]/section/div[2]/main/div/div/div[2]/div/div[2]/ul/li[7]/div/a",
 ]
 
 # шаги 2..N — альтернативные xpath
@@ -96,10 +97,11 @@ def _switch_to_nav_context(driver):
         _switch_default(driver)
 
 
-def _tree_found_in_current_context(driver, timeout: float = 2):
+def _tree_found_in_current_context(driver, timeout: float = None):
+    t = timeout if timeout is not None else TREE_XPATH_TIMEOUT
     for xpath in TREE_READY_XPATHS:
         try:
-            _wait(driver, timeout).until(EC.presence_of_element_located((By.XPATH, xpath)))
+            _wait(driver, t).until(EC.presence_of_element_located((By.XPATH, xpath)))
             return True
         except Exception:
             continue
@@ -116,7 +118,7 @@ def _find_nav_context(driver, stop_check):
     while time.time() < deadline:
         if stop_check and stop_check():
             return None
-        if _tree_found_in_current_context(driver, timeout=2):
+        if _tree_found_in_current_context(driver):
             return None
         time.sleep(POLL)
     try:
@@ -152,12 +154,12 @@ def _click_el(driver, el, do_click) -> bool:
         return False
 
 
-def _click_xpath(driver, xpath: str, do_click, stop_check, label: str) -> bool:
+def _click_xpath(driver, xpath: str, do_click, stop_check, label: str, timeout: float = 1.5) -> bool:
     for attempt in range(1, RETRY_CLICK + 1):
         if stop_check and stop_check():
             return False
 
-        el = _get(driver, xpath, timeout=3)
+        el = _get(driver, xpath, timeout=timeout)
         if not el:
             time.sleep(0.35)
             continue
@@ -170,12 +172,12 @@ def _click_xpath(driver, xpath: str, do_click, stop_check, label: str) -> bool:
     return False
 
 
-def _click_step_xpaths(driver, xpath_list, do_click, stop_check, label: str) -> bool:
+def _click_step_xpaths(driver, xpath_list, do_click, stop_check, label: str, timeout: float = 1) -> bool:
     for i, xp in enumerate(xpath_list, start=1):
         if stop_check and stop_check():
             return False
         sub = f"{label} (вариант {i}/{len(xpath_list)})"
-        if _click_xpath(driver, xp, do_click, stop_check, sub):
+        if _click_xpath(driver, xp, do_click, stop_check, sub, timeout=timeout):
             return True
     return False
 
@@ -187,7 +189,7 @@ def _step1(driver, do_click, stop_check) -> bool:
 
         for i, xp in enumerate(FIRST_BUTTON_FALLBACK_XPATHS, start=1):
             label = f"шаг 1 (fallback {i}/{len(FIRST_BUTTON_FALLBACK_XPATHS)})"
-            if _click_xpath(driver, xp, do_click, stop_check, label):
+            if _click_xpath(driver, xp, do_click, stop_check, label, timeout=1):
                 return True
         time.sleep(0.6)
 

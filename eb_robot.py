@@ -19,9 +19,10 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.action_chains import ActionChains
 
-from authorization import run_authorization
+from authorization import run_authorization, click_native_ok, cert_dialog_visible
 from navigation import run_navigation
 from table_export2 import process_table_and_export
+from txt_output import load_progress, ask_start_index
 
 try:
     import chromedriver_binary
@@ -216,6 +217,13 @@ def main():
         logging.error("EB_BASE_URL не задан. Задайте переменную окружения EB_BASE_URL")
         sys.exit(1)
 
+    # С какой записи начинать — спрашиваем в самом начале (0 считаем как 1)
+    _project_root = os.path.dirname(os.path.abspath(__file__))
+    _txt_out_dir = os.path.join(_project_root, "TXT Outputs")
+    _last_done = load_progress(_txt_out_dir)
+    _default_start = (_last_done + 1) if _last_done > 0 else 1
+    _start_index = ask_start_index(_default_start)
+
     yandex_path = os.environ.get("YANDEX_BROWSER", DEFAULT_YANDEX_PATH)
     user_data = os.environ.get("YANDEX_USER_DATA", DEFAULT_USER_DATA_DIR)
     headless = "--headless" in sys.argv
@@ -257,58 +265,71 @@ def main():
         logging.error("Нет ни одной вкладки браузера, выход")
         sys.exit(1)
 
-    # Открываем новую вкладку
-    n_before = len(driver.window_handles)
-    try:
-        driver.execute_cdp_cmd("Target.createTarget", {"url": "about:blank"})
-    except Exception:
-        pass
     time.sleep(0.5)
-    if len(driver.window_handles) > n_before:
+
+    cert_dialog_found = cert_dialog_visible()
+    if cert_dialog_found:
+        if click_native_ok(timeout=5):
+            logging.info("Окно авторизации найдено, нажат ОК — работаем в текущем окне")
+        else:
+            cert_dialog_found = False
+            logging.warning("Окно авторизации не закрылось, открываем новую вкладку")
+
+    if not cert_dialog_found:
+        n_before = len(driver.window_handles)
         try:
-            driver.switch_to.window(driver.window_handles[-1])
+            driver.execute_cdp_cmd("Target.createTarget", {"url": "about:blank"})
         except Exception:
             pass
-    else:
-        try:
-            import win32gui
-            import win32con
-            import win32api
-            found = []
-            def _cb(hwnd, _):
-                if win32gui.IsWindowVisible(hwnd):
-                    t = (win32gui.GetWindowText(hwnd) or "").lower()
-                    if "yandex" in t or "яндекс" in t:
-                        found.append(hwnd)
-                        return False
-                return True
-            win32gui.EnumWindows(_cb, None)
-            if found:
-                win32gui.SetForegroundWindow(found[0])
-                time.sleep(0.15)
-                win32api.keybd_event(0x11, 0, 0, 0)  # Ctrl
-                win32api.keybd_event(0x54, 0, 0, 0)  # T
-                win32api.keybd_event(0x54, 0, win32con.KEYEVENTF_KEYUP, 0)
-                win32api.keybd_event(0x11, 0, win32con.KEYEVENTF_KEYUP, 0)
-                time.sleep(0.5)
-                if len(driver.window_handles) > n_before:
-                    driver.switch_to.window(driver.window_handles[-1])
-        except Exception as e:
-            logging.warning("Ctrl+T не сработал: %s", e)
-        if len(driver.window_handles) == n_before:
+        time.sleep(0.5)
+        if len(driver.window_handles) > n_before:
             try:
-                driver.switch_to.window(driver.window_handles[0])
-                driver.get("about:blank")
-                time.sleep(0.3)
-                driver.execute_script("window.open('');")
-                time.sleep(0.5)
-                if len(driver.window_handles) > 1:
-                    driver.switch_to.window(driver.window_handles[-1])
+                driver.switch_to.window(driver.window_handles[-1])
+            except Exception:
+                pass
+        else:
+            try:
+                import win32gui
+                import win32con
+                import win32api
+                found = []
+                def _cb(hwnd, _):
+                    if win32gui.IsWindowVisible(hwnd):
+                        t = (win32gui.GetWindowText(hwnd) or "").lower()
+                        if "yandex" in t or "яндекс" in t:
+                            found.append(hwnd)
+                            return False
+                    return True
+                win32gui.EnumWindows(_cb, None)
+                if found:
+                    win32gui.SetForegroundWindow(found[0])
+                    time.sleep(0.15)
+                    win32api.keybd_event(0x11, 0, 0, 0)  # Ctrl
+                    win32api.keybd_event(0x54, 0, 0, 0)  # T
+                    win32api.keybd_event(0x54, 0, win32con.KEYEVENTF_KEYUP, 0)
+                    win32api.keybd_event(0x11, 0, win32con.KEYEVENTF_KEYUP, 0)
+                    time.sleep(0.5)
+                    if len(driver.window_handles) > n_before:
+                        driver.switch_to.window(driver.window_handles[-1])
             except Exception as e:
-                logging.warning("Открытие вкладки через JS: %s", e)
+                logging.warning("Ctrl+T не сработал: %s", e)
+            if len(driver.window_handles) == n_before:
+                try:
+                    driver.switch_to.window(driver.window_handles[0])
+                    driver.get("about:blank")
+                    time.sleep(0.3)
+                    driver.execute_script("window.open('');")
+                    time.sleep(0.5)
+                    if len(driver.window_handles) > 1:
+                        driver.switch_to.window(driver.window_handles[-1])
+                except Exception as e:
+                    logging.warning("Открытие вкладки через JS: %s", e)
 
     try:
-        run_authorization(driver, BASE_URL, _stop_requested)
+        run_authorization(
+            driver, BASE_URL, _stop_requested,
+            skip_navigate=cert_dialog_found,
+        )
         if _stop_requested():
             return
         nav_ok = run_navigation(driver, _stop_requested, _do_click)
@@ -321,6 +342,7 @@ def main():
                 download_dir=os.environ.get("BROWSER_DOWNLOADS_DIR"),
                 stop_check=_stop_requested,
                 do_click=_do_click,
+                start_index=_start_index,
             )
     except Exception as e:
         logging.exception("Ошибка при выполнении сценария")
