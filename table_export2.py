@@ -18,6 +18,10 @@ from selenium.common.exceptions import (
     WebDriverException,
 )
 
+from filtering import run_filtering, apply_settings_hide_always
+from txt_output import export_all_rows_to_txt
+
+
 BROWSER_DOWNLOADS_DIR = os.environ.get(
     "BROWSER_DOWNLOADS_DIR",
     os.path.expandvars(r"%USERPROFILE%\Downloads"),
@@ -517,18 +521,18 @@ def _open_columns_menu_and_check_all(driver, wait_cfg: WaitCfg, stop_check=None)
     return True
 
 
-def _print_list_and_download_excel(driver, wait_cfg: WaitCfg, download_dir: str, stop_check=None) -> Optional[str]:
-    start_ts = _now()
-
-    # кнопка "печать списка"
+def _open_print_dialog_and_click_ok(driver, wait_cfg: WaitCfg, stop_check=None) -> bool:
+    """
+    Прошлый шаг перед «дождаться скачивания Excel»: открыть диалог печати, выбрать строку, нажать ОК.
+    Возвращает True, если все шаги выполнены (в т.ч. ОК нажат).
+    """
     try:
         btn = _find_visible(driver, By.XPATH, X_BTN_PRINT_LIST, wait_cfg.medium, wait_cfg.poll)
     except TimeoutException:
-        return None
+        return False
     if not _robust_click(driver, btn):
-        return None
+        return False
 
-    # контекстное меню li[3]/a
     try:
         mi = _find_visible(driver, By.XPATH, X_CTX_MENU_LI3, wait_cfg.short, wait_cfg.poll)
     except TimeoutException:
@@ -536,22 +540,22 @@ def _print_list_and_download_excel(driver, wait_cfg: WaitCfg, download_dir: str,
         try:
             mi = _find_visible(driver, By.XPATH, X_CTX_MENU_LI3, wait_cfg.short, wait_cfg.poll)
         except TimeoutException:
-            return None
+            return False
     _robust_click(driver, mi)
 
     try:
         row = _find_visible(driver, By.XPATH, X_PRINT_TABLE_FIRST_ROW, wait_cfg.medium, wait_cfg.poll)
     except TimeoutException:
-        return None
+        return False
     _robust_click(driver, row)
     _safe_sleep(0.35, stop_check)
     for attempt in range(1, 10):
         if stop_check and stop_check():
-            return None
+            return False
         try:
             row = driver.find_element(By.XPATH, X_PRINT_TABLE_FIRST_ROW)
         except Exception:
-            return None
+            return False
         if _element_has_selected_background(driver, row):
             break
         _robust_click(driver, row)
@@ -561,19 +565,24 @@ def _print_list_and_download_excel(driver, wait_cfg: WaitCfg, download_dir: str,
             row = driver.find_element(By.XPATH, X_PRINT_TABLE_FIRST_ROW)
             _robust_click(driver, row)
             _safe_sleep(0.4, stop_check)
-            if not _element_has_selected_background(driver, row):
-                pass
         except Exception:
             pass
 
     try:
         ok = _find_visible(driver, By.XPATH, X_PRINT_OK_BTN, wait_cfg.medium, wait_cfg.poll)
     except TimeoutException:
+        return False
+    if not _robust_click(driver, ok):
+        return False
+
+    _catch_print_success_toast(driver, wait_cfg)
+    return True
+
+
+def _print_list_and_download_excel(driver, wait_cfg: WaitCfg, download_dir: str, stop_check=None) -> Optional[str]:
+    start_ts = _now()
+    if not _open_print_dialog_and_click_ok(driver, wait_cfg, stop_check):
         return None
-    _robust_click(driver, ok)
-
-    toast_ok = _catch_print_success_toast(driver, wait_cfg)
-
     xlsx = _wait_for_new_download(
         download_dir=download_dir,
         exts=[".xlsx", ".xls"],
@@ -669,38 +678,6 @@ def _download_zip(driver, wait_cfg: WaitCfg, download_dir: str, stop_check=None)
     )
     return zip_path
 
-
-def _ensure_single_checkbox_active(driver, wait_cfg: WaitCfg, stop_check=None) -> bool:
-    # найти конкретный чекбокс span и включить, если выключен
-    try:
-        span = _find(driver, By.XPATH, X_SINGLE_CHECKBOX_SPAN, wait_cfg.medium, wait_cfg.poll)
-    except TimeoutException:
-        return False
-
-    # если уже checked — пропуск
-    try:
-        if _is_checkbox_checked(span):
-            return True
-    except StaleElementReferenceException:
-        pass
-
-    if not _robust_click(driver, span):
-        return False
-
-    t0 = _now()
-    while _now() - t0 < wait_cfg.short:
-        if stop_check and stop_check():
-            return False
-        try:
-            span2 = driver.find_element(By.XPATH, X_SINGLE_CHECKBOX_SPAN)
-            if _is_checkbox_checked(span2):
-                return True
-        except Exception:
-            pass
-        time.sleep(0.2)
-    return False
-
-
 def _move_to_outputs(src_path: str, dst_dir: str) -> str:
     filename = os.path.basename(src_path)
     dst_path = _unique_path(dst_dir, filename)
@@ -713,6 +690,7 @@ def process_table_and_export(
     download_dir: Optional[str] = None,
     stop_check: Optional[Callable[[], bool]] = None,
     do_click: Optional[Callable] = None,
+    start_index: int = 1,
 ):
     
     wait_cfg = WaitCfg()
@@ -722,6 +700,9 @@ def process_table_and_export(
         original_implicit = driver.timeouts.implicit_wait
     except Exception:
         original_implicit = None
+
+    # Настройки (убираем быстрый просмотр)
+    apply_settings_hide_always(driver, stop_check=stop_check)
 
     try:
         try:
@@ -760,18 +741,45 @@ def process_table_and_export(
         else:
             raise RuntimeError("Фильтры не удалось привести в состояние ON")
 
+        _safe_sleep(2.5, stop_check)
+
+        # Фильтрация перед печатью списка
+        ok = run_filtering(driver, cfg=wait_cfg, stop_check=stop_check)
+        if not ok:
+            raise RuntimeError("Фильтрация не выполнена")
+
         # -----------------
-        # Excel
+        # Excel: текущий шаг — дождаться скачивания; прошлый шаг — открыть диалог и нажать ОК.
+        # Если текущий шаг после всех ретраев не выполнен — повторяем прошлый шаг и снова пробуем текущий.
         # -----------------
         xlsx_path = None
-        for attempt in range(1, 4):
+        for outer in range(1, 4):
             if stop_check and stop_check():
                 return
-            xlsx_path = _print_list_and_download_excel(driver, wait_cfg, download_dir, stop_check)
+            since_ts = _now()
+            if not _open_print_dialog_and_click_ok(driver, wait_cfg, stop_check):
+                _ensure_filters_on(driver, wait_cfg, stop_check)
+                _safe_sleep(1.0, stop_check)
+                continue
+            for inner in range(1, 4):
+                if stop_check and stop_check():
+                    return
+                xlsx_path = _wait_for_new_download(
+                    download_dir=download_dir,
+                    exts=[".xlsx", ".xls"],
+                    since_ts=since_ts,
+                    timeout=wait_cfg.long,
+                    stop_check=stop_check,
+                )
+                if xlsx_path and os.path.exists(xlsx_path):
+                    break
+                _safe_sleep(1.0, stop_check)
+                # Повторить прошлый шаг, затем снова текущий (ожидание скачивания)
+                since_ts = _now()
+                _open_print_dialog_and_click_ok(driver, wait_cfg, stop_check)
             if xlsx_path and os.path.exists(xlsx_path):
                 break
             _safe_sleep(1.0, stop_check)
-
             _ensure_filters_on(driver, wait_cfg, stop_check)
 
         if not xlsx_path or not os.path.exists(xlsx_path):
@@ -780,38 +788,16 @@ def process_table_and_export(
         saved_excel = _move_to_outputs(xlsx_path, excel_out_dir)
 
         # -----------------
-        # чекбокс
+        # TXT - экспорт всех строк всех страниц
         # -----------------
-        for attempt in range(1, 4):
-            if stop_check and stop_check():
-                return
-            ok = _ensure_single_checkbox_active(driver, wait_cfg, stop_check)
-            if ok:
-                break
-            _safe_sleep(0.6, stop_check)
-        else:
-            raise RuntimeError("Шаг 10: чекбокс не удалось установить в активное состояние")
-
-        _ensure_row_selected_before_txt(driver, wait_cfg, stop_check)
-        if stop_check and stop_check():
-            return
-
-        # -----------------
-        # ZIP - извлечь в TXT Outputs
-        # -----------------
-        zip_path = None
-        for attempt in range(1, 4):
-            if stop_check and stop_check():
-                return
-            zip_path = _download_zip(driver, wait_cfg, download_dir, stop_check)
-            if zip_path and os.path.exists(zip_path):
-                break
-            _safe_sleep(1.0, stop_check)
-
-        if not zip_path or not os.path.exists(zip_path):
-            raise RuntimeError("Не удалось дождаться скачивания ZIP")
-
-        extracted = _extract_zip_to_dir(zip_path, txt_out_dir)
+        export_all_rows_to_txt(
+            driver,
+            download_dir=download_dir,
+            txt_out_dir=txt_out_dir,
+            cfg=wait_cfg,
+            stop_check=stop_check,
+            start_index=start_index,
+        )
 
         _safe_sleep(5.0, stop_check)
 
