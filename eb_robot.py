@@ -35,6 +35,43 @@ except ImportError:
 
 _stop_event = threading.Event()
 _keyboard_listener = None
+_keepalive_thread = None
+
+# Интервал "шевеления" мыши, чтобы система не показывала "неактивна более 5 минут"
+KEEPALIVE_MOUSE_INTERVAL = 4 * 60
+
+
+def _keepalive_mouse_move():
+    #Минимальное движение мыши (1 пиксель туда-обратно), чтобы сбросить таймер неактивности ОС
+    try:
+        if sys.platform != "win32":
+            return
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+        pt = POINT()
+        if user32.GetCursorPos(ctypes.byref(pt)):
+            user32.SetCursorPos(pt.x + 1, pt.y + 1)
+            user32.SetCursorPos(pt.x, pt.y)
+    except Exception:
+        pass
+
+
+def _keepalive_loop():
+    #В фоне раз в KEEPALIVE_MOUSE_INTERVAL секунд шевелит мышь, не мешая роботу
+    while not _stop_event.wait(timeout=KEEPALIVE_MOUSE_INTERVAL):
+        _keepalive_mouse_move()
+
+
+def _start_keepalive_thread():
+    global _keepalive_thread
+    if _keepalive_thread is not None:
+        return
+    _keepalive_thread = threading.Thread(target=_keepalive_loop, daemon=True)
+    _keepalive_thread.start()
+
 
 DEFAULT_YANDEX_PATH = os.path.expandvars(
     r"%LOCALAPPDATA%\Yandex\YandexBrowser\Application\browser.exe"
@@ -200,7 +237,9 @@ def _close_browser():
 def main():
     global _driver_ref
     _log_dir = os.path.dirname(os.path.abspath(__file__))
-    _log_path = os.path.join(_log_dir, "eb_robot.log")
+    _logs_dir = os.path.join(_log_dir, "logs")
+    os.makedirs(_logs_dir, exist_ok=True)
+    _log_path = os.path.join(_logs_dir, "eb_robot.log")
     logging.basicConfig(
         level=logging.INFO,
         filename=_log_path,
@@ -212,12 +251,13 @@ def main():
 
     _stop_event.clear()
     _init_ctrl_x_stop()
+    _start_keepalive_thread()
 
     if not BASE_URL:
         logging.error("EB_BASE_URL не задан. Задайте переменную окружения EB_BASE_URL")
         sys.exit(1)
 
-    # С какой записи начинать — спрашиваем в самом начале (0 считаем как 1)
+    # С какой записи начинать — спрашиваем в самом начале
     _project_root = os.path.dirname(os.path.abspath(__file__))
     _txt_out_dir = os.path.join(_project_root, "TXT Outputs")
     _last_done = load_progress(_txt_out_dir)

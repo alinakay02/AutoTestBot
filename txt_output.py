@@ -393,6 +393,52 @@ def _progress_path(txt_out_dir: str) -> str:
     return os.path.join(txt_out_dir, "_progress.json")
 
 
+GUIDS_EXCEL_FILENAME = "processed_guids.xlsx"
+
+
+def _guids_excel_path(txt_out_dir: str) -> str:
+    return os.path.join(txt_out_dir, GUIDS_EXCEL_FILENAME)
+
+
+def _init_guids_excel_for_export(txt_out_dir: str, start_index: int) -> None:
+    """
+    Перед экспортом: если начинаем с 1 — удаляем старый файл GUID
+    Если с N > 1 — файл не трогаем, запись продолжится с нужной строки
+    """
+    if start_index <= 1:
+        p = _guids_excel_path(txt_out_dir)
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+        except Exception:
+            pass
+
+
+def _write_guid_to_excel(txt_out_dir: str, record_index_1based: int, guid: str) -> None:
+    """Записывает GUID обработанной записи в строку record_index_1based (1-based) в Excel. Строка 1 — заголовок"""
+    try:
+        from openpyxl import Workbook  # type: ignore[import-untyped]
+        from openpyxl import load_workbook  # type: ignore[import-untyped]
+    except ImportError:
+        logging.warning("openpyxl не установлен: GUID не записываются в Excel")
+        return
+    p = _guids_excel_path(txt_out_dir)
+    excel_row = record_index_1based + 1  # строка 1 — заголовок "GUID"
+    try:
+        if os.path.isfile(p):
+            wb = load_workbook(p)
+            ws = wb.active
+        else:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "GUID"
+            ws.cell(row=1, column=1, value="GUID")
+        ws.cell(row=excel_row, column=1, value=guid)
+        wb.save(p)
+    except Exception as e:
+        logging.warning("Не удалось записать GUID в Excel: %s", e)
+
+
 def load_progress(txt_out_dir: str) -> int:
     """Возвращает номер последней успешно обработанной записи (1-based), либо 0"""
     p = _progress_path(txt_out_dir)
@@ -415,7 +461,7 @@ def save_progress(txt_out_dir: str, last_done: int):
 
 
 def ask_start_index(default_start: int) -> int:
-    """Спрашивает с какой записи начинать. 0 и отрицательные считаются как 1."""
+    """Спрашивает с какой записи начинать"""
     try:
         s = input(f"С какой записи начинать скачивание (1 — с начала)? [по умолчанию {default_start}]: ").strip()
     except EOFError:
@@ -441,8 +487,8 @@ def export_all_rows_to_txt(
     start_index: int = 1,
 ) -> Tuple[int, int]:
     """
-    Выгружает TXT для каждой строки всех страниц.
-    start_index задаётся снаружи (запрос в начале программы). 0 недопустим — передавать не меньше 1.
+    Выгружает TXT для каждой строки всех страниц
+    start_index задаётся снаружи (запрос в начале программы). 0 недопустим — передавать не меньше 1
     Возвращает (total_records, downloaded_count)
     """
     if start_index <= 0:
@@ -461,6 +507,7 @@ def export_all_rows_to_txt(
             pass
 
         os.makedirs(txt_out_dir, exist_ok=True)
+        _init_guids_excel_for_export(txt_out_dir, start_index)
 
         cur_page, total_pages, shown, total_records, _ = get_paging_info_with_retry(
             driver, cfg, stop_check
@@ -554,6 +601,7 @@ def export_all_rows_to_txt(
                         shutil.move(extracted_path, dst_txt)
 
                         save_progress(txt_out_dir, global_index)
+                        _write_guid_to_excel(txt_out_dir, global_index, guid)
 
                         if not _ensure_row_unselected(driver, tr, cfg, stop_check):
                             raise RuntimeError("Не удалось снять выделение строки")
@@ -621,6 +669,7 @@ def export_all_rows_to_txt(
                             dst_txt = _unique_txt_path(txt_out_dir, guid)
                             shutil.move(extracted_path, dst_txt)
                             save_progress(txt_out_dir, global_index)
+                            _write_guid_to_excel(txt_out_dir, global_index, guid)
                             if not _ensure_row_unselected(driver, tr, cfg, stop_check):
                                 raise RuntimeError("Не удалось снять выделение строки")
                             downloaded += 1

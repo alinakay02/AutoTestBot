@@ -5,3 +5,4 @@ pywinauto>=0.6.8
 chromedriver-binary==142.0.7444.162.0
 pynput>=1.7.0
 python-dotenv>=1.0.0
+openpyxl>=3.0.0

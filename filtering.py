@@ -48,8 +48,14 @@ X_STATUS_BY_TEXT = (
     "//th[contains(., 'Статус документа')]//span/a"
 )
 
-# Строка "согласовано получателем" — tr[13]. Варианты как для "выбор колонок" (ROWS_TABLE_XPATHS)
+# Контейнер строк попапа "Статус документа" — нужная строка не всегда под одним номером, ищем по title
+X_STATUS_POPUP_TBODY = (
+    "/html/body/div[4]/div/table/tbody/tr/td/table/tbody/tr[3]/td/div/div/table/tbody[1]"
+)
+# Строка "согласовано получателем" — tr[13] (используется как первая проверка)
 X_STATUS_POPUP_ROW = "/html/body/div[4]/div/table/tbody/tr/td/table/tbody/tr[3]/td/div/div/table/tbody[1]/tr[13]"
+STATUS_TITLE_NEEDLE = "Согласовано получателем"
+
 STATUS_TABLE_BASE_XPATHS = [
     "/html/body/div[4]//table//tbody/tr",
     "//div[contains(@class,'z-combobox-popup')]//table//tbody/tr",
@@ -278,14 +284,83 @@ def _is_displayed(el) -> bool:
         return False
 
 
+def _tr_has_status_title(tr_el, needle: str = STATUS_TITLE_NEEDLE) -> bool:
+    """Проверяет, что у tr есть title с текстом 'Согласовано получателем'."""
+    try:
+        title = (tr_el.get_attribute("title") or "").strip()
+        return needle in title
+    except Exception:
+        return False
+
+
 def _click_status_row_direct(driver, cfg: WaitCfg, stop_check=None) -> bool:
     """
-    Клик по строке tr[13] в попапе. Как "выбор колонок" — ищем таблицу, берём строку по индексу.
+    Выбор строки «Согласовано получателем» в попапе статуса.
+    Сначала проверяем, что строка по текущему адресу (tr[13]) имеет title «Согласовано получателем».
+    Если нет — ищем среди всех tr в контейнере tbody строку с таким title и кликаем её.
     """
     if stop_check and stop_check():
         return False
 
+    def _scroll_and_click(tr_el):
+        try:
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});", tr_el
+            )
+        except Exception:
+            try:
+                driver.execute_script("arguments[0].scrollIntoView(true);", tr_el)
+            except Exception:
+                pass
+        _safe_sleep(0.5, stop_check)
+        if _robust_click(driver, tr_el):
+            _safe_sleep(0.35, stop_check)
+            return True
+        return False
+
     def _try_click_in_context():
+        # 1) Найти tbody контейнера статуса (строка не всегда под одним номером)
+        tbody = None
+        try:
+            tbody = _wait(driver, 3, cfg.poll).until(
+                EC.presence_of_element_located((By.XPATH, X_STATUS_POPUP_TBODY))
+            )
+        except TimeoutException:
+            pass
+        if tbody is not None:
+            rows = tbody.find_elements(By.XPATH, "./tr")
+            if rows:
+                # 2) Сначала проверить строку по индексу
+                idx = min(STATUS_ROW_INDEX - 1, len(rows) - 1)
+                tr = rows[idx]
+                if _tr_has_status_title(tr):
+                    if _scroll_and_click(tr):
+                        logger.info(
+                            "filtering: выбран пункт tr[%d] (title 'Согласовано получателем')",
+                            idx + 1,
+                        )
+                        return True
+                # 3) Иначе ищем любую tr с нужным title в контейнере
+                for i, tr in enumerate(rows):
+                    if stop_check and stop_check():
+                        return False
+                    try:
+                        if _tr_has_status_title(tr) and _scroll_and_click(tr):
+                            logger.info(
+                                "filtering: выбран пункт tr[%d] по title 'Согласовано получателем'",
+                                i + 1,
+                            )
+                            return True
+                    except StaleElementReferenceException:
+                        rows = tbody.find_elements(By.XPATH, "./tr")
+                        if i < len(rows) and _tr_has_status_title(rows[i]):
+                            if _scroll_and_click(rows[i]):
+                                return True
+                        continue
+                    except Exception:
+                        continue
+
+        # Fallback: клик по фиксированному XPath / по индексу без проверки title
         for base_xpath in [X_STATUS_POPUP_ROW] + [
             f"{bp}[{STATUS_ROW_INDEX}]" for bp in STATUS_TABLE_BASE_XPATHS
         ]:
@@ -295,20 +370,10 @@ def _click_status_row_direct(driver, cfg: WaitCfg, stop_check=None) -> bool:
                 el = _wait(driver, 2, cfg.poll).until(
                     EC.presence_of_element_located((By.XPATH, base_xpath))
                 )
-                try:
-                    driver.execute_script(
-                        "arguments[0].scrollIntoView({block:'center'});", el
-                    )
-                except Exception:
-                    try:
-                        driver.execute_script("arguments[0].scrollIntoView(true);", el)
-                    except Exception:
-                        pass
-                _safe_sleep(0.5, stop_check)
-                if _robust_click(driver, el):
-                    logger.info("filtering: выбран пункт tr[%d]", STATUS_ROW_INDEX)
-                    _safe_sleep(0.35, stop_check)
+                if _tr_has_status_title(el) and _scroll_and_click(el):
+                    logger.info("filtering: выбран пункт по XPath (title совпал)")
                     return True
+                # если по индексу нашли, но title не тот — уже искали по tbody выше
             except TimeoutException:
                 continue
 
@@ -317,22 +382,25 @@ def _click_status_row_direct(driver, cfg: WaitCfg, stop_check=None) -> bool:
                 return False
             try:
                 _wait(driver, 2, cfg.poll).until(
-                    lambda d, xp=base_xpath: len(d.find_elements(By.XPATH, xp)) >= STATUS_ROW_INDEX
+                    lambda d, xp=base_xpath: len(d.find_elements(By.XPATH, xp)) > 0
                 )
                 rows = driver.find_elements(By.XPATH, base_xpath)
+                # сначала по индексу, если title подходит
                 if len(rows) >= STATUS_ROW_INDEX:
                     tr = rows[STATUS_ROW_INDEX - 1]
-                    try:
-                        driver.execute_script(
-                            "arguments[0].scrollIntoView({block:'center'});", tr
-                        )
-                    except Exception:
-                        pass
-                    _safe_sleep(0.5, stop_check)
-                    if _robust_click(driver, tr):
+                    if _tr_has_status_title(tr) and _scroll_and_click(tr):
                         logger.info("filtering: выбран пункт tr[%d] (по индексу)", STATUS_ROW_INDEX)
-                        _safe_sleep(0.35, stop_check)
                         return True
+                # иначе перебор всех tr по title
+                for i, tr in enumerate(rows):
+                    if stop_check and stop_check():
+                        return False
+                    try:
+                        if _tr_has_status_title(tr) and _scroll_and_click(tr):
+                            logger.info("filtering: выбран пункт tr[%d] по title", i + 1)
+                            return True
+                    except (StaleElementReferenceException, Exception):
+                        continue
             except (TimeoutException, Exception):
                 continue
         return False
