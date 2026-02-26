@@ -59,6 +59,7 @@ ROWS_TABLE_XPATHS = [
 SELECTED_ROW_BG = "#90B6E4"
 SELECTED_ROW_BG_RGB = "rgb(144, 182, 228)"
 
+X_PRINT_ERROR_BTN = "/html/body/div[5]/div[2]/table[2]/tbody/tr/td/table/tbody/tr/td/button"
 
 @dataclass
 class WaitCfg:

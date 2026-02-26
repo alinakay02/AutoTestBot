@@ -20,46 +20,46 @@ TREE_XPATH_TIMEOUT = 0.8  # на каждый xpath при поиске дере
 # селекторы готовности дерева
 TREE_READY_XPATHS = [
     "//app-tree",
-    "//app-tree/div/ul/li[7]",
+    "//app-tree/div/ul/li[6]",
     "//section//main",
     "//main//ul",
     "//main//app-tree",
-    "//ul/li[7]",
+    "//ul/li[6]",
 ]
 
 # шаг 1 — относительные пути, затем full path
 FIRST_BUTTON_FALLBACK_XPATHS = [
-    "/html/body/div[2]/section/div[2]/main/div/div/div[2]/div/div[2]/ul/li[7]/div/a",
-    "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[7]/div/div/a",
-    "/html/body/div[1]/section/div[2]/main/div/div/div[2]/div/div[2]/ul/li[7]/div/a",
-    "//app-tree/div/ul/li[7]/div/div/a",
-    "//app-tree//ul/li[7]//a",
-    "//section//main//app-tree//ul/li[7]//a",
-    "//section//main//app-tree/div/ul/li[7]/div/div/a",
-    "//main//app-tree/div/ul/li[7]/div/div/a",
-    "//app-tree/div/ul/li[7]/div/a",
-    "//main//ul/li[7]//a",
+    "/html/body/div[2]/section/div[2]/main/div/div/div[2]/div/div[2]/ul/li[6]/div/a",
+    "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[6]/div/div/a",
+    "/html/body/div[1]/section/div[2]/main/div/div/div[2]/div/div[2]/ul/li[6]/div/a",
+    "//app-tree/div/ul/li[6]/div/div/a",
+    "//app-tree//ul/li[6]//a",
+    "//section//main//app-tree//ul/li[6]//a",
+    "//section//main//app-tree/div/ul/li[6]/div/div/a",
+    "//main//app-tree/div/ul/li[6]/div/div/a",
+    "//app-tree/div/ul/li[6]/div/a",
+    "//main//ul/li[6]//a",
 ]
 
 # шаги 2..N — альтернативные xpath
 BUTTON_XPATHS = [
     [
-        "//app-tree/div/ul/li[7]/div/div[1]/a[1]",
-        "//main//app-tree//ul/li[7]//div//a",
-        "/html/body/div[1]/section/div[2]/main/div/div/div[2]/div/div[2]/ul/li[7]/div/a",
-        "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[7]/div/div[1]/a[1]",
+        "//app-tree/div/ul/li[6]/div/div[1]/a[1]",
+        "//main//app-tree//ul/li[6]//div//a",
+        "/html/body/div[1]/section/div[2]/main/div/div/div[2]/div/div[2]/ul/li[6]/div/a",
+        "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[6]/div/div[1]/a[1]",
     ],
     # шаг 3
     [
-        "//app-tree//ul/li[7]//app-tree//ul/li[4]//div[1]/a[1]",
+        "//app-tree//ul/li[6]//app-tree//ul/li[4]//div[1]/a[1]",
         "//main//app-tree//ul/li[4]//div//a[1]",
-        "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[7]/div/div[2]/app-tree/div/ul/li[4]/div/div[1]/a[1]",
+        "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[6]/div/div[2]/app-tree/div/ul/li[4]/div/div[1]/a[1]",
     ],
     # шаг 4
     [
-        "//app-tree//ul/li[7]//app-tree//ul/li[4]//app-tree//ul/li[2]//div/a",
+        "//app-tree//ul/li[6]//app-tree//ul/li[4]//app-tree//ul/li[2]//div/a",
         "//main//app-tree//ul/li[2]//div/a",
-        "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[7]/div/div[2]/app-tree/div/ul/li[4]/div/div[2]/app-tree/div/ul/li[2]/div/div/a",
+        "/html/body/div[1]/section/div[2]/main/div[1]/app-tree/div/ul/li[6]/div/div[2]/app-tree/div/ul/li[4]/div/div[2]/app-tree/div/ul/li[2]/div/div/a",
     ],
     # шаг 5
     [
