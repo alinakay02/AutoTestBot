@@ -59,6 +59,7 @@ ROWS_TABLE_XPATHS = [
 SELECTED_ROW_BG = "#90B6E4"
 SELECTED_ROW_BG_RGB = "rgb(144, 182, 228)"
 
+X_PRINT_ERROR_BTN = "/html/body/div[5]/div[2]/table[2]/tbody/tr/td/table/tbody/tr/td/button"
 
 @dataclass
 class WaitCfg:
@@ -526,57 +527,81 @@ def _open_print_dialog_and_click_ok(driver, wait_cfg: WaitCfg, stop_check=None) 
     Прошлый шаг перед «дождаться скачивания Excel»: открыть диалог печати, выбрать строку, нажать ОК.
     Возвращает True, если все шаги выполнены (в т.ч. ОК нажат).
     """
-    try:
-        btn = _find_visible(driver, By.XPATH, X_BTN_PRINT_LIST, wait_cfg.medium, wait_cfg.poll)
-    except TimeoutException:
-        return False
-    if not _robust_click(driver, btn):
-        return False
+    max_attempts = 3  # Максимальное количество попыток внутри функции
+    for attempt in range(max_attempts):
+        if stop_check and stop_check():
+            return False
 
-    try:
-        mi = _find_visible(driver, By.XPATH, X_CTX_MENU_LI3, wait_cfg.short, wait_cfg.poll)
-    except TimeoutException:
-        _safe_sleep(0.3, stop_check)
+        # Шаг 1: Открыть диалог печати
+        try:
+            btn = _find_visible(driver, By.XPATH, X_BTN_PRINT_LIST, wait_cfg.medium, wait_cfg.poll)
+        except TimeoutException:
+            return False
+        if not _robust_click(driver, btn):
+            continue
+
+        # Шаг 2: Выбрать пункт меню
         try:
             mi = _find_visible(driver, By.XPATH, X_CTX_MENU_LI3, wait_cfg.short, wait_cfg.poll)
         except TimeoutException:
-            return False
-    _robust_click(driver, mi)
+            _safe_sleep(0.3, stop_check)
+            try:
+                mi = _find_visible(driver, By.XPATH, X_CTX_MENU_LI3, wait_cfg.short, wait_cfg.poll)
+            except TimeoutException:
+                continue
+        _robust_click(driver, mi)
 
-    try:
-        row = _find_visible(driver, By.XPATH, X_PRINT_TABLE_FIRST_ROW, wait_cfg.medium, wait_cfg.poll)
-    except TimeoutException:
-        return False
-    _robust_click(driver, row)
-    _safe_sleep(0.35, stop_check)
-    for attempt in range(1, 10):
-        if stop_check and stop_check():
-            return False
+        # Шаг 3: Выбрать строку
         try:
-            row = driver.find_element(By.XPATH, X_PRINT_TABLE_FIRST_ROW)
-        except Exception:
-            return False
-        if _element_has_selected_background(driver, row):
-            break
+            row = _find_visible(driver, By.XPATH, X_PRINT_TABLE_FIRST_ROW, wait_cfg.medium, wait_cfg.poll)
+        except TimeoutException:
+            continue
         _robust_click(driver, row)
         _safe_sleep(0.35, stop_check)
-    else:
-        try:
-            row = driver.find_element(By.XPATH, X_PRINT_TABLE_FIRST_ROW)
+        
+        # Убедиться, что строка выделена
+        for select_attempt in range(1, 10):
+            if stop_check and stop_check():
+                return False
+            try:
+                row = driver.find_element(By.XPATH, X_PRINT_TABLE_FIRST_ROW)
+            except Exception:
+                continue
+            if _element_has_selected_background(driver, row):
+                break
             _robust_click(driver, row)
-            _safe_sleep(0.4, stop_check)
-        except Exception:
-            pass
+            _safe_sleep(0.35, stop_check)
+        else:
+            continue
 
-    try:
-        ok = _find_visible(driver, By.XPATH, X_PRINT_OK_BTN, wait_cfg.medium, wait_cfg.poll)
-    except TimeoutException:
-        return False
-    if not _robust_click(driver, ok):
-        return False
+        # Шаг 4: Нажать OK
+        try:
+            ok = _find_visible(driver, By.XPATH, X_PRINT_OK_BTN, wait_cfg.medium, wait_cfg.poll)
+        except TimeoutException:
+            continue
+        if not _robust_click(driver, ok):
+            continue
 
-    _catch_print_success_toast(driver, wait_cfg)
-    return True
+        # Шаг 5: Проверить, появилось ли окно ошибки
+        try:
+            error_btn = _find_visible(driver, By.XPATH, X_PRINT_ERROR_BTN, 3, wait_cfg.poll)
+            if error_btn:
+                # Нажимаем на кнопку в окне ошибки
+                _robust_click(driver, error_btn)
+                _safe_sleep(0.5, stop_check)
+                # Продолжаем цикл, чтобы повторить процесс
+                continue
+        except TimeoutException:
+            # Окно ошибки не появилось, все хорошо
+            _catch_print_success_toast(driver, wait_cfg)
+            return True
+
+        # Если мы дошли до сюда, значит все шаги выполнены успешно
+        _catch_print_success_toast(driver, wait_cfg)
+        return True
+
+    # Все попытки исчерпаны
+    return False
 
 
 def _print_list_and_download_excel(driver, wait_cfg: WaitCfg, download_dir: str, stop_check=None) -> Optional[str]:
@@ -756,31 +781,28 @@ def process_table_and_export(
         for outer in range(1, 4):
             if stop_check and stop_check():
                 return
-            since_ts = _now()
+                
+            # Пытаемся открыть диалог и нажать OK
             if not _open_print_dialog_and_click_ok(driver, wait_cfg, stop_check):
                 _ensure_filters_on(driver, wait_cfg, stop_check)
                 _safe_sleep(1.0, stop_check)
                 continue
-            for inner in range(1, 4):
-                if stop_check and stop_check():
-                    return
-                xlsx_path = _wait_for_new_download(
-                    download_dir=download_dir,
-                    exts=[".xlsx", ".xls"],
-                    since_ts=since_ts,
-                    timeout=wait_cfg.long,
-                    stop_check=stop_check,
-                )
-                if xlsx_path and os.path.exists(xlsx_path):
-                    break
-                _safe_sleep(1.0, stop_check)
-                # Повторить прошлый шаг, затем снова текущий (ожидание скачивания)
-                since_ts = _now()
-                _open_print_dialog_and_click_ok(driver, wait_cfg, stop_check)
+                
+            # Ожидаем появления файла
+            since_ts = _now()
+            xlsx_path = _wait_for_new_download(
+                download_dir=download_dir,
+                exts=[".xlsx", ".xls"],
+                since_ts=since_ts,
+                timeout=wait_cfg.long,
+                stop_check=stop_check,
+            )
+            
             if xlsx_path and os.path.exists(xlsx_path):
                 break
+                
+            # Если файл не появился, пробуем еще раз
             _safe_sleep(1.0, stop_check)
-            _ensure_filters_on(driver, wait_cfg, stop_check)
 
         if not xlsx_path or not os.path.exists(xlsx_path):
             raise RuntimeError("Не удалось дождаться скачивания Excel")
