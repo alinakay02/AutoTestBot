@@ -528,6 +528,7 @@ def _open_print_dialog_and_click_ok(driver, wait_cfg: WaitCfg, stop_check=None) 
     Возвращает True, если все шаги выполнены (в т.ч. ОК нажат).
     """
     max_attempts = 3  # Максимальное количество попыток внутри функции
+    
     for attempt in range(max_attempts):
         if stop_check and stop_check():
             return False
@@ -556,22 +557,25 @@ def _open_print_dialog_and_click_ok(driver, wait_cfg: WaitCfg, stop_check=None) 
             row = _find_visible(driver, By.XPATH, X_PRINT_TABLE_FIRST_ROW, wait_cfg.medium, wait_cfg.poll)
         except TimeoutException:
             continue
-        _robust_click(driver, row)
-        _safe_sleep(0.35, stop_check)
-        
+            
         # Убедиться, что строка выделена
-        for select_attempt in range(1, 10):
+        selected = False
+        for select_attempt in range(1, 6):
             if stop_check and stop_check():
                 return False
+                
             try:
                 row = driver.find_element(By.XPATH, X_PRINT_TABLE_FIRST_ROW)
+                if _element_has_selected_background(driver, row):
+                    selected = True
+                    break
+                _robust_click(driver, row)
+                _safe_sleep(0.35, stop_check)
             except Exception:
+                _safe_sleep(0.35, stop_check)
                 continue
-            if _element_has_selected_background(driver, row):
-                break
-            _robust_click(driver, row)
-            _safe_sleep(0.35, stop_check)
-        else:
+        
+        if not selected:
             continue
 
         # Шаг 4: Нажать OK
@@ -579,22 +583,27 @@ def _open_print_dialog_and_click_ok(driver, wait_cfg: WaitCfg, stop_check=None) 
             ok = _find_visible(driver, By.XPATH, X_PRINT_OK_BTN, wait_cfg.medium, wait_cfg.poll)
         except TimeoutException:
             continue
+            
         if not _robust_click(driver, ok):
             continue
 
         # Шаг 5: Проверить, появилось ли окно ошибки
+        error_detected = False
         try:
-            error_btn = _find_visible(driver, By.XPATH, X_PRINT_ERROR_BTN, 3, wait_cfg.poll)
+            # Используем короткое ожидание для проверки окна ошибки
+            error_btn = _find_visible(driver, By.XPATH, X_PRINT_ERROR_BTN, 2, wait_cfg.poll)
             if error_btn:
-                # Нажимаем на кнопку в окне ошибки
+                logging.info("Обнаружено окно ошибки при экспорте Excel, повторяем процесс")
                 _robust_click(driver, error_btn)
                 _safe_sleep(0.5, stop_check)
-                # Продолжаем цикл, чтобы повторить процесс
-                continue
+                error_detected = True
         except TimeoutException:
-            # Окно ошибки не появилось, все хорошо
-            _catch_print_success_toast(driver, wait_cfg)
-            return True
+            # Окно ошибки не появилось - это хорошо
+            pass
+
+        # Если окно ошибки было, продолжаем цикл для повторной попытки
+        if error_detected:
+            continue
 
         # Если мы дошли до сюда, значит все шаги выполнены успешно
         _catch_print_success_toast(driver, wait_cfg)
